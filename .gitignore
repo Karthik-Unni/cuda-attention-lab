@@ -1,0 +1,14 @@
+# CUDA build artifacts
+*.o
+*.out
+*.exe
+
+# Local CUDA executable at repository root
+/vector_add
+
+# Python
+__pycache__/
+*.pyc
+
+# Jupyter
+.ipynb_checkpoints/
