@@ -30,10 +30,6 @@ A kernel can be mathematically correct and still perform poorly because of:
 
 This project is an experimental study of these problems.
 
-The goal is not to copy optimized CUDA implementations, but to understand
-why each optimization works, when it stops helping, and what hardware
-resource becomes the next bottleneck.
-
 #
 No optimization is accepted simply because it "looks faster".
 
