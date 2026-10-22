@@ -1,339 +1,216 @@
-
 #include <cuda_runtime.h>
 
-#include <iostream>
-#include <iomanip>
+#include <algorithm>
+#include <cmath>
 #include <cstdlib>
+#include <iomanip>
+#include <iostream>
+#include <vector>
 
 #include "../../kernels/matmul/naive.cuh"
 #include "../../kernels/matmul/tiled.cuh"
 
-#define CHECK_CUDA(call)                                             \
-do {                                                                 \
-    cudaError_t err = call;                                          \
-    if (err != cudaSuccess) {                                        \
-        std::cerr << "CUDA error: " << cudaGetErrorString(err)       \
+#define CHECK_CUDA(call) do { \
+    cudaError_t err = (call); \
+    if (err != cudaSuccess) { \
+        std::cerr << "CUDA error: " << cudaGetErrorString(err) \
                   << " at " << __FILE__ << ":" << __LINE__ << '\n'; \
-        std::exit(EXIT_FAILURE);                                     \
-    }                                                                \
+        std::exit(EXIT_FAILURE); \
+    } \
 } while (0)
 
-
 float benchmark_naive(
-    const float* d_A,
-    const float* d_B,
-    float* d_C,
-    int M,
-    int K,
-    int N,
-    dim3 blocks,
-    dim3 threads,
-    int warmup,
-    int iterations
+    const float* A, const float* B, float* C,
+    int M, int K, int N,
+    dim3 blocks, dim3 threads, int warmup, int iterations
 ) {
-    for (int i = 0; i < warmup; i++) {
-        matmul_naive<<<blocks, threads>>>(
-            d_A, d_B, d_C, M, K, N
-        );
-    }
+    for (int i = 0; i < warmup; ++i)
+        matmul_naive<<<blocks, threads>>>(A, B, C, M, K, N);
 
     CHECK_CUDA(cudaGetLastError());
     CHECK_CUDA(cudaDeviceSynchronize());
 
     cudaEvent_t start, stop;
-
     CHECK_CUDA(cudaEventCreate(&start));
     CHECK_CUDA(cudaEventCreate(&stop));
-
     CHECK_CUDA(cudaEventRecord(start));
 
-    for (int i = 0; i < iterations; i++) {
-        matmul_naive<<<blocks, threads>>>(
-            d_A, d_B, d_C, M, K, N
-        );
-    }
+    for (int i = 0; i < iterations; ++i)
+        matmul_naive<<<blocks, threads>>>(A, B, C, M, K, N);
 
+    CHECK_CUDA(cudaGetLastError());
     CHECK_CUDA(cudaEventRecord(stop));
     CHECK_CUDA(cudaEventSynchronize(stop));
 
-    CHECK_CUDA(cudaGetLastError());
-
-    float milliseconds = 0.0f;
-
-    CHECK_CUDA(
-        cudaEventElapsedTime(
-            &milliseconds,
-            start,
-            stop
-        )
-    );
-
+    float ms = 0.0f;
+    CHECK_CUDA(cudaEventElapsedTime(&ms, start, stop));
     CHECK_CUDA(cudaEventDestroy(start));
     CHECK_CUDA(cudaEventDestroy(stop));
 
-    return milliseconds / iterations;
+    return ms / iterations;
 }
-
 
 float benchmark_tiled(
-    const float* d_A,
-    const float* d_B,
-    float* d_C,
-    int M,
-    int K,
-    int N,
-    dim3 blocks,
-    dim3 threads,
-    int warmup,
-    int iterations
+    const float* A, const float* B, float* C,
+    int M, int K, int N,
+    dim3 blocks, dim3 threads, int warmup, int iterations
 ) {
-    for (int i = 0; i < warmup; i++) {
-        matmul_tiled<<<blocks, threads>>>(
-            d_A, d_B, d_C, M, K, N
-        );
-    }
+    for (int i = 0; i < warmup; ++i)
+        matmul_tiled<<<blocks, threads>>>(A, B, C, M, K, N);
 
     CHECK_CUDA(cudaGetLastError());
     CHECK_CUDA(cudaDeviceSynchronize());
 
     cudaEvent_t start, stop;
-
     CHECK_CUDA(cudaEventCreate(&start));
     CHECK_CUDA(cudaEventCreate(&stop));
-
     CHECK_CUDA(cudaEventRecord(start));
 
-    for (int i = 0; i < iterations; i++) {
-        matmul_tiled<<<blocks, threads>>>(
-            d_A, d_B, d_C, M, K, N
-        );
-    }
+    for (int i = 0; i < iterations; ++i)
+        matmul_tiled<<<blocks, threads>>>(A, B, C, M, K, N);
 
+    CHECK_CUDA(cudaGetLastError());
     CHECK_CUDA(cudaEventRecord(stop));
     CHECK_CUDA(cudaEventSynchronize(stop));
 
-    CHECK_CUDA(cudaGetLastError());
-
-    float milliseconds = 0.0f;
-
-    CHECK_CUDA(
-        cudaEventElapsedTime(
-            &milliseconds,
-            start,
-            stop
-        )
-    );
-
+    float ms = 0.0f;
+    CHECK_CUDA(cudaEventElapsedTime(&ms, start, stop));
     CHECK_CUDA(cudaEventDestroy(start));
     CHECK_CUDA(cudaEventDestroy(stop));
 
-    return milliseconds / iterations;
+    return ms / iterations;
 }
 
+bool validate_output(
+    const float* C, int M, int N, float expected
+) {
+    std::vector<float> result(static_cast<size_t>(M) * N);
+
+    CHECK_CUDA(cudaMemcpy(
+        result.data(), C, result.size() * sizeof(float),
+        cudaMemcpyDeviceToHost
+    ));
+
+    for (size_t i = 0; i < result.size(); ++i) {
+        if (!std::isfinite(result[i]) ||
+            std::fabs(result[i] - expected) > 1e-3f) {
+            std::cerr << "Validation failed at index " << i
+                      << ": expected " << expected
+                      << ", got " << result[i] << '\n';
+            return false;
+        }
+    }
+    return true;
+}
 
 int main() {
+    const int sizes[] = {512, 1024, 2048, 4096};
+    const int WARMUP = 5;
 
-    const int M = 1024;
-    const int K = 1024;
-    const int N = 1024;
+    struct Result {
+        int size;
+        float naive_ms;
+        float tiled_ms;
+        double naive_gflops;
+        double tiled_gflops;
+        double speedup;
+    };
+    std::vector<Result> results;
 
-    const int WARMUP = 10;
-    const int ITERATIONS = 100;
+    int device = 0;
+    cudaDeviceProp prop{};
+    CHECK_CUDA(cudaGetDevice(&device));
+    CHECK_CUDA(cudaGetDeviceProperties(&prop, device));
 
-    std::cout
-        << "========================================\n"
-        << "CUDA MATMUL BENCHMARK\n"
-        << "========================================\n\n";
+    std::cout << "CUDA MATMUL SIZE-SCALING BENCHMARK\n"
+              << "GPU: " << prop.name << "\n\n";
 
-    std::cout
-        << "Matrix dimensions:\n"
-        << "M = " << M << '\n'
-        << "K = " << K << '\n'
-        << "N = " << N << "\n\n";
+    for (int n : sizes) {
+        const int M = n, K = n, N = n;
+        const size_t count = static_cast<size_t>(n) * n;
+        const size_t bytes = count * sizeof(float);
 
-    size_t size_A =
-        static_cast<size_t>(M) * K * sizeof(float);
+        // Use fewer repetitions for larger workloads.
+        const int iterations =
+            (n <= 1024) ? 20 : (n == 2048 ? 5 : 2);
 
-    size_t size_B =
-        static_cast<size_t>(K) * N * sizeof(float);
+        std::cout << "Testing " << n << " x " << n
+                  << " (warmup=" << WARMUP
+                  << ", iterations=" << iterations << ")...\n";
 
-    size_t size_C =
-        static_cast<size_t>(M) * N * sizeof(float);
+        std::vector<float> h_A(count, 1.0f);
+        std::vector<float> h_B(count, 2.0f);
 
+        float *d_A = nullptr, *d_B = nullptr, *d_C = nullptr;
+        CHECK_CUDA(cudaMalloc(&d_A, bytes));
+        CHECK_CUDA(cudaMalloc(&d_B, bytes));
+        CHECK_CUDA(cudaMalloc(&d_C, bytes));
 
-    // -------------------------
-    // Host memory
-    // -------------------------
+        CHECK_CUDA(cudaMemcpy(d_A, h_A.data(), bytes,
+                              cudaMemcpyHostToDevice));
+        CHECK_CUDA(cudaMemcpy(d_B, h_B.data(), bytes,
+                              cudaMemcpyHostToDevice));
 
-    float* h_A =
-        new float[M * K];
+        dim3 threads(16, 16);
+        dim3 blocks((N + threads.x - 1) / threads.x,
+                    (M + threads.y - 1) / threads.y);
 
-    float* h_B =
-        new float[K * N];
+        float naive_ms = benchmark_naive(
+            d_A, d_B, d_C, M, K, N,
+            blocks, threads, WARMUP, iterations
+        );
+        bool naive_ok = validate_output(d_C, M, N, 2.0f * K);
 
-    float* h_C =
-        new float[M * N];
+        float tiled_ms = benchmark_tiled(
+            d_A, d_B, d_C, M, K, N,
+            blocks, threads, WARMUP, iterations
+        );
+        bool tiled_ok = validate_output(d_C, M, N, 2.0f * K);
 
+        if (!naive_ok || !tiled_ok) {
+            std::cerr << "Correctness check failed for size "
+                      << n << ".\n";
+            CHECK_CUDA(cudaFree(d_A));
+            CHECK_CUDA(cudaFree(d_B));
+            CHECK_CUDA(cudaFree(d_C));
+            return EXIT_FAILURE;
+        }
 
-    for (int i = 0; i < M * K; i++) {
-        h_A[i] = 1.0f;
+        const double flops =
+            2.0 * static_cast<double>(M) * K * N;
+        const double naive_gflops = flops / (naive_ms * 1e6);
+        const double tiled_gflops = flops / (tiled_ms * 1e6);
+
+        results.push_back({
+            n, naive_ms, tiled_ms, naive_gflops,
+            tiled_gflops, naive_ms / tiled_ms
+        });
+
+        std::cout << "  Correctness: PASS (both kernels)\n"
+                  << "  Naive: " << naive_ms << " ms, "
+                  << naive_gflops << " GFLOP/s\n"
+                  << "  Tiled: " << tiled_ms << " ms, "
+                  << tiled_gflops << " GFLOP/s\n"
+                  << "  Speedup: " << naive_ms / tiled_ms << "x\n\n";
+
+        CHECK_CUDA(cudaFree(d_A));
+        CHECK_CUDA(cudaFree(d_B));
+        CHECK_CUDA(cudaFree(d_C));
     }
 
-    for (int i = 0; i < K * N; i++) {
-        h_B[i] = 2.0f;
+    std::cout << std::fixed << std::setprecision(3);
+    std::cout << "\nSUMMARY TABLE\n"
+              << "Size,Naive_ms,Tiled_ms,Naive_GFLOP_s,"
+                 "Tiled_GFLOP_s,Speedup\n";
+
+    for (const auto& r : results) {
+        std::cout << r.size << ","
+                  << r.naive_ms << ","
+                  << r.tiled_ms << ","
+                  << r.naive_gflops << ","
+                  << r.tiled_gflops << ","
+                  << r.speedup << "\n";
     }
 
-
-    // -------------------------
-    // Device memory
-    // -------------------------
-
-    float* d_A;
-    float* d_B;
-    float* d_C;
-
-    CHECK_CUDA(cudaMalloc(&d_A, size_A));
-    CHECK_CUDA(cudaMalloc(&d_B, size_B));
-    CHECK_CUDA(cudaMalloc(&d_C, size_C));
-
-
-    CHECK_CUDA(
-        cudaMemcpy(
-            d_A,
-            h_A,
-            size_A,
-            cudaMemcpyHostToDevice
-        )
-    );
-
-    CHECK_CUDA(
-        cudaMemcpy(
-            d_B,
-            h_B,
-            size_B,
-            cudaMemcpyHostToDevice
-        )
-    );
-
-
-    // -------------------------
-    // Launch configuration
-    // -------------------------
-
-    dim3 threads(16, 16);
-
-    dim3 blocks(
-        (N + threads.x - 1) / threads.x,
-        (M + threads.y - 1) / threads.y
-    );
-
-
-    // -------------------------
-    // Benchmark
-    // -------------------------
-
-    float naive_ms =
-        benchmark_naive(
-            d_A,
-            d_B,
-            d_C,
-            M,
-            K,
-            N,
-            blocks,
-            threads,
-            WARMUP,
-            ITERATIONS
-        );
-
-
-    float tiled_ms =
-        benchmark_tiled(
-            d_A,
-            d_B,
-            d_C,
-            M,
-            K,
-            N,
-            blocks,
-            threads,
-            WARMUP,
-            ITERATIONS
-        );
-
-
-    // -------------------------
-    // Performance calculation
-    // -------------------------
-
-    double flops =
-        2.0 *
-        static_cast<double>(M) *
-        static_cast<double>(K) *
-        static_cast<double>(N);
-
-
-    double naive_gflops =
-        flops / (naive_ms * 1e6);
-
-    double tiled_gflops =
-        flops / (tiled_ms * 1e6);
-
-
-    double speedup =
-        naive_ms / tiled_ms;
-
-
-    // -------------------------
-    // Results
-    // -------------------------
-
-    std::cout << std::fixed
-              << std::setprecision(3);
-
-    std::cout
-        << "\n========================================\n"
-        << "RESULTS\n"
-        << "========================================\n";
-
-    std::cout
-        << "Naive:\n"
-        << "  Latency : "
-        << naive_ms
-        << " ms\n"
-        << "  GFLOP/s : "
-        << naive_gflops
-        << "\n\n";
-
-    std::cout
-        << "Tiled:\n"
-        << "  Latency : "
-        << tiled_ms
-        << " ms\n"
-        << "  GFLOP/s : "
-        << tiled_gflops
-        << "\n\n";
-
-    std::cout
-        << "Tiled speedup: "
-        << speedup
-        << "x\n";
-
-    std::cout
-        << "========================================\n";
-
-
-    // -------------------------
-    // Cleanup
-    // -------------------------
-
-    CHECK_CUDA(cudaFree(d_A));
-    CHECK_CUDA(cudaFree(d_B));
-    CHECK_CUDA(cudaFree(d_C));
-
-    delete[] h_A;
-    delete[] h_B;
-    delete[] h_C;
-
-    return 0;
+    return EXIT_SUCCESS;
 }
