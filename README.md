@@ -196,3 +196,74 @@ This is an educational and experimental CUDA project.
 
 The emphasis is on understanding the reasoning behind GPU optimization rather
 than reproducing a particular production implementation.
+
+---
+
+## Matmul Size-Scaling Benchmark
+
+### Objective
+
+Measure how the naive and shared-memory tiled CUDA matrix multiplication
+kernels scale as matrix dimensions increase.
+
+The experiment evaluates four square matrix sizes on an NVIDIA Tesla T4 GPU.
+
+### Experimental Setup
+
+- **GPU:** NVIDIA Tesla T4
+- **CUDA Toolkit:** 13.0
+- **Compiler optimization:** `nvcc -O2`
+- **Data type:** FP32
+- **Tile size:** 16 × 16 for the tiled kernel
+- **Warm-up launches:** 5 per kernel
+- **Timed iterations:** 20 for 512 and 1024, 5 for 2048, and 2 for 4096
+- **Timing:** CUDA events
+- **Correctness:** Output compared against the expected result for the
+  initialized inputs
+
+The input matrices contain values of 1.0 for A and 2.0 for B. For an
+N × N multiplication, every output element should equal 2N.
+
+Both implementations passed this correctness check at all four sizes in
+each of three benchmark runs.
+
+### Results
+
+The table reports the median latency across three runs and computes speedup
+from the ratio of median naive latency to median tiled latency.
+
+| Matrix size | Naive latency (ms) | Tiled latency (ms) | Speedup |
+|---:|---:|---:|---:|
+| 512 × 512 | 0.434 | 0.278 | 1.562× |
+| 1024 × 1024 | 3.984 | 2.448 | 1.628× |
+| 2048 × 2048 | 36.158 | 21.955 | 1.647× |
+| 4096 × 4096 | 289.339 | 178.144 | 1.624× |
+
+These are measurements from this experimental environment, not universal
+performance guarantees.
+
+### Observations
+
+- The tiled implementation was faster than the naive implementation at all
+  four tested sizes.
+- The median-based speedup ranged from approximately 1.56× to 1.65×.
+- Runtime increased substantially with matrix size, consistent with the
+  cubic arithmetic complexity of square matrix multiplication.
+- The speedup was not perfectly monotonic across sizes. Further profiling is
+  needed to identify the relative effects of memory traffic, synchronization,
+  register usage, occupancy, and instruction execution.
+- The benchmark uses constant-valued inputs, so correctness testing with
+  additional varied inputs remains a useful future improvement.
+
+### Limitations
+
+- Results were collected on a shared/cloud GPU environment and may vary with
+  clock behavior, temperature, and system activity.
+- The number of timed iterations varies by matrix size to limit benchmark
+  duration. Naive and tiled kernels use the same iteration count for each
+  size.
+- The experiment does not yet include Nsight Compute profiling, a cuBLAS
+  baseline, or a full Roofline analysis.
+
+The next step is to use profiling and systematic tile-size experiments to
+investigate why the measured speedup differs across workloads.
